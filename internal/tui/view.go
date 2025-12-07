@@ -143,9 +143,64 @@ func formatBytesHuman(b int64) string {
 
 func (m model) View() string {
 
+	// --- CUSTOM BOOT SEQUENCE ---
 	if m.state == statusBoot {
-		bar := strings.Repeat("█", m.bootProgress)
-		return styles.TxtOrange.Render(fmt.Sprintf("\n\n  INITIALIZING NEO-TOKYO KERNEL...\n  [%-25s]\n\n  > MOUNTING CHROME DRIVER (SELENIUM MODE)...\n  > LOADING AUDIO DRIVER (.WAV)...", bar))
+		output := "\n\n"
+
+		// 1. BIOS HEADER
+		output += styles.TxtOrange.Render(" // NEURAL LINK BIOS v2.4") + "\n\n"
+
+		// 2. KERNEL LOADER + PROGRESS BAR
+		// Width of the bar in characters
+		barWidth := 20
+		
+		// Calculate how many blocks to show based on bootProgress vs BootMaxSteps
+		// We subtract a small buffer (e.g. 10 steps) so the bar fills up before the very end
+		progressRatio := float64(m.bootProgress) / float64(BootMaxSteps-10)
+		if progressRatio > 1.0 {
+			progressRatio = 1.0
+		}
+		
+		filledLen := int(progressRatio * float64(barWidth))
+		barStr := strings.Repeat("█", filledLen)
+
+		// Render with fixed width padding so it fills up smoothly
+		output += styles.TxtOrange.Render(" INITIALIZING NEO-TOKYO KERNEL...") + "\n"
+		output += styles.TxtOrange.Render(fmt.Sprintf(" [%-25s]", barStr)) + "\n\n"
+
+		// 3. SCROLLING LOG LINES
+		logLines := []string{
+			"[OK] MOUNTING CHROME DRIVER (SELENIUM MODE)",
+			"[OK] LOADING AUDIO DRIVER (.WAV)",
+			"[OK] MEMORY INTEGRITY CHECK... 16GB",
+			"[OK] MOUNTING FILESYSTEM... /websites",
+			"[OK] INITIALIZING ROD DRIVER...",
+			"[OK] ESTABLISHING SECURE CONNECTION...",
+			"", // Spacer
+			"> WAKE UP, NEO..._",
+		}
+
+		// Animation Logic: Show one line every X steps
+		stepsPerLine := 5 // Adjust spacing speed here
+
+		for i, line := range logLines {
+			threshold := (i * stepsPerLine) + 5 // +5 offset so bar starts first
+
+			if m.bootProgress >= threshold {
+				if strings.Contains(line, "WAKE UP") {
+					// Pulsing Effect (controlled by blinkState every 0.5s)
+					if m.blinkState {
+						output += styles.TxtOrange.Render(" "+line) + "\n"
+					} else {
+						output += "\n" // Blank line for "Off" state
+					}
+				} else {
+					output += styles.TxtOrange.Render(" "+line) + "\n"
+				}
+			}
+		}
+
+		return output
 	}
 
 	header := m.renderHeader()

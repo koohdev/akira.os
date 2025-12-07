@@ -13,6 +13,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// --- DEV LIFE OF QUALITY: BOOT CONFIGURATION ---
+const (
+	BootTickSpeed = time.Millisecond * 50 // Speed of one "tick" (Lower = Faster)
+	BootMaxSteps  = 80                    // Total length of boot sequence (Increase if text gets cut off)
+)
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -357,7 +363,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case driverReadyMsg:
 		m.driverModeStr = msg.mode
 		if m.state == statusBoot {
-			m.bootProgress = 30
+			// Ensure we wait for the full animation even if driver loads fast
+			m.bootProgress = BootMaxSteps
 			m.state = statusMenu
 			m.updateMainMenu()
 		} else {
@@ -368,7 +375,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.globalTick++
 		if m.state == statusBoot {
-			if m.bootProgress < 30 {
+			// Use the Config variable here
+			if m.bootProgress < BootMaxSteps {
 				m.bootProgress++
 			}
 		}
@@ -421,7 +429,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg { return tickMsg(t) })
+		return m, tea.Tick(BootTickSpeed, func(t time.Time) tea.Msg { return tickMsg(t) })
 
 	// --- MSG HANDLERS ---
 	case folderMsg:
