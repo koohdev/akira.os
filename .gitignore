@@ -1,0 +1,37 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (if you use vendor)
+vendor/
+
+# Temporary files and IDE settings
+tmp/
+.vscode/
+.idea/
+.DS_Store
+
+# Air temporary build directory
+tmp/
+
+# If you ever change air to build to "bin", ignore that too
+bin/
+
+websites/
+web/
+.cursorignore
+ascii-art.png
+
+*.mp4
+RECORDINGS/
+chrome_sandbox/
+Frame 3.png

@@ -1,0 +1,24 @@
+[
+  {
+    "ticker": "$EXAMPLE",
+    "theme": "Cyberpunk",
+    "platform": "SOLANA",
+    "twitter": "https://x.com/example",
+    "telegram": "https://t.me/example",
+    "discord": "None",
+    "dex": "None",
+    "assets": "https://imgur.com/link_to_logos (Or 'None')",
+    "context": "Make it extremely bullish. High energy."
+  },
+  {
+    "ticker": "$SECOND_COIN",
+    "theme": "Retro",
+    "platform": "BASE",
+    "twitter": "https://x.com/second",
+    "telegram": "None",
+    "discord": "None",
+    "dex": "None",
+    "assets": "None",
+    "context": "A calm, safe project."
+  }
+]
