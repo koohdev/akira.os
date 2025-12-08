@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -11,12 +12,13 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/shirou/gopsutil/v3/cpu"
 )
 
 // --- DEV LIFE OF QUALITY: BOOT CONFIGURATION ---
 const (
-	BootTickSpeed = time.Millisecond * 50 // Speed of one "tick" (Lower = Faster)
-	BootMaxSteps  = 80                    // Total length of boot sequence (Increase if text gets cut off)
+	BootTickSpeed = time.Millisecond * 5 // Speed of one "tick" (Lower = Faster)
+	BootMaxSteps  = 1000                 // Total length of boot sequence (Increase if text gets cut off)
 )
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -28,6 +30,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.list.SetWidth(msg.Width / 2)
 		m.list.SetHeight(14)
+		// Update viewer viewport dimensions
+		if m.state == statusViewer {
+			leftWidth := m.width / 4
+			rightWidth := m.width - leftWidth - 3
+			m.codeViewport.Width = rightWidth - 4
+			m.codeViewport.Height = m.height - 15
+		}
 		headerHeight := lipgloss.Height(m.renderHeader())
 		verticalMargins := 3
 		vpHeight := msg.Height - headerHeight - verticalMargins
@@ -54,7 +63,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.state == statusAuditReport || m.state == statusManual {
+		if m.state == statusAuditReport || m.state == statusManual || m.state == statusCompress {
 			if msg.String() == "enter" || msg.String() == "esc" {
 				m.state = statusMenu
 				m.updateMainMenu()
@@ -105,6 +114,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case "MUSIC":
 						m.state = statusMusic
 						return m, loadMusic()
+					case "SYNC":
+						m.state = statusNeuralSync
+						m.typingPhase = 1
+						m.typingTargets = getRandomizedTargets()
+						m.typingTarget = m.typingTargets[0]
+						m.typingInput = ""
+						m.typingStartTime = time.Now()
+						m.typingTimerDuration = 30 * time.Second
+						m.typingCurrentWPM = 0
+						m.typingAccuracy = 0
+						m.typingPhaseWPM = make([]int, 5)
+						m.typingPhaseAccuracy = make([]int, 5)
+						m.textInput.Reset()
+						m.textInput.Focus()
+						return m, nil
+					case "OVERWATCH":
+						m.state = statusOverwatch
+						m.overwatchSelected = 0
+						return m, runOverwatchScan()
+					case "VIEWER":
+						m.state = statusViewer
+						m.viewerActivePane = 0
+						m.fileExplorer.CurrentDirectory, _ = os.Getwd()
+						return m, m.fileExplorer.Init()
 					case "MANUAL":
 						m.state = statusManual
 						m.setManualText()
@@ -360,6 +393,179 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// --- NEURAL SYNC TYPING GAME ---
+		if m.state == statusNeuralSync {
+			if msg.String() == "esc" {
+				m.state = statusMenu
+				m.updateMainMenu()
+				return m, nil
+			}
+			// Update text input
+			m.textInput, cmd = m.textInput.Update(msg)
+			m.typingInput = m.textInput.Value()
+
+			// Calculate WPM and accuracy
+			elapsed := time.Since(m.typingStartTime)
+			if elapsed.Seconds() > 0 {
+				charsTyped := len(m.typingInput)
+				minutes := elapsed.Minutes()
+				if minutes > 0 {
+					m.typingCurrentWPM = int(float64(charsTyped) / 5.0 / minutes)
+				}
+			}
+
+			// Calculate accuracy
+			correct := 0
+			for i := 0; i < len(m.typingInput) && i < len(m.typingTarget); i++ {
+				if m.typingInput[i] == m.typingTarget[i] {
+					correct++
+				}
+			}
+			if len(m.typingInput) > 0 {
+				m.typingAccuracy = int((float64(correct) / float64(len(m.typingInput))) * 100)
+			}
+
+			// Check if completed
+			if m.typingInput == m.typingTarget {
+				// Store results for this phase
+				phaseIndex := m.typingPhase - 1
+				if phaseIndex >= 0 && phaseIndex < len(m.typingPhaseWPM) {
+					m.typingPhaseWPM[phaseIndex] = m.typingCurrentWPM
+					m.typingPhaseAccuracy[phaseIndex] = m.typingAccuracy
+				}
+
+				// Check if this is the last phase
+				if m.typingPhase >= m.typingTotalPhases {
+					// Calculate average WPM and accuracy
+					avgWPM := 0
+					avgAccuracy := 0
+					for i := 0; i < len(m.typingPhaseWPM); i++ {
+						avgWPM += m.typingPhaseWPM[i]
+						avgAccuracy += m.typingPhaseAccuracy[i]
+					}
+					if len(m.typingPhaseWPM) > 0 {
+						avgWPM /= len(m.typingPhaseWPM)
+						avgAccuracy /= len(m.typingPhaseAccuracy)
+					}
+					m.typingLastWPM = avgWPM
+					m.state = statusDone
+					m.statusMsg = fmt.Sprintf("NEURAL SYNC COMPLETE: %d WPM, %d%% ACCURACY", avgWPM, avgAccuracy)
+					return m, nil
+				} else {
+					// Move to next phase
+					m.typingPhase++
+					m.typingTarget = m.typingTargets[m.typingPhase-1]
+					m.typingInput = ""
+					m.typingStartTime = time.Now()
+					m.typingCurrentWPM = 0
+					m.typingAccuracy = 0
+					m.textInput.Reset()
+					m.textInput.Focus()
+					return m, nil
+				}
+			}
+
+			// Check timeout
+			if time.Since(m.typingStartTime) > m.typingTimerDuration {
+				m.state = statusDone
+				m.statusMsg = fmt.Sprintf("NEURAL SYNC TIMEOUT ON SEQUENCE %d. TRY AGAIN.", m.typingPhase)
+				return m, nil
+			}
+
+			return m, cmd
+		}
+
+		// --- OVERWATCH SYSTEM MONITOR ---
+		if m.state == statusOverwatch {
+			if msg.String() == "esc" {
+				m.state = statusMenu
+				m.updateMainMenu()
+				return m, nil
+			}
+			if msg.String() == "r" || msg.String() == "R" {
+				// Refresh scan
+				return m, runOverwatchScan()
+			}
+			if msg.String() == "k" || msg.String() == "K" {
+				// Kill selected process (immediately, no confirmation)
+				if m.overwatchSelected >= 0 && m.overwatchSelected < len(m.overwatchProcesses) {
+					proc := m.overwatchProcesses[m.overwatchSelected]
+					return m, killProcessCmd(proc.PID)
+				}
+			}
+			// Arrow keys to select process (but also allow viewport scrolling)
+			if msg.String() == "up" {
+				// Check if we're in the process list area - if so, select process
+				// Otherwise, scroll viewport
+				if m.overwatchSelected > 0 {
+					m.overwatchSelected--
+					m.viewport.SetContent(m.renderOverwatchView())
+					return m, nil
+				}
+			}
+			if msg.String() == "down" {
+				if m.overwatchSelected < len(m.overwatchProcesses)-1 {
+					m.overwatchSelected++
+					m.viewport.SetContent(m.renderOverwatchView())
+					return m, nil
+				}
+			}
+			// Allow viewport to handle scrolling (page up/down, mouse wheel)
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+
+		// --- VIEWER (ZEN MODE) ---
+		if m.state == statusViewer {
+			if msg.String() == "esc" {
+				m.state = statusMenu
+				m.updateMainMenu()
+				return m, nil
+			}
+			if msg.String() == "tab" {
+				// Toggle active pane
+				m.viewerActivePane = 1 - m.viewerActivePane
+				return m, nil
+			}
+
+			// Handle filepicker messages
+			var fpCmd tea.Cmd
+			m.fileExplorer, fpCmd = m.fileExplorer.Update(msg)
+
+			// Check if a file was selected
+			didSelect, filePath := m.fileExplorer.DidSelectFile(msg)
+			if didSelect && filePath != "" {
+				// Load the selected file
+				return m, tea.Batch(loadFileCmd(filePath), fpCmd)
+			}
+
+			// Handle viewport messages
+			var vpCmd tea.Cmd
+			m.codeViewport, vpCmd = m.codeViewport.Update(msg)
+
+			// Update cursor position for code viewport
+			if m.viewerActivePane == 1 {
+				// Calculate line/col from viewport position
+				// This is approximate - viewport doesn't expose exact cursor position
+				m.viewerLineNum = m.codeViewport.YOffset + 1
+				m.viewerColNum = 1
+			}
+
+			return m, tea.Batch(fpCmd, vpCmd)
+		}
+
+	case fileLoadedMsg:
+		if m.state == statusViewer {
+			if msg.err == nil {
+				m.viewerCurrentFile = msg.path
+				m.codeViewport.SetContent(msg.content)
+				m.codeViewport.YOffset = 0
+				// Switch focus to code viewport
+				m.viewerActivePane = 1
+			}
+		}
+		return m, nil
+
 	case driverReadyMsg:
 		m.driverModeStr = msg.mode
 		if m.state == statusBoot {
@@ -380,22 +586,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.bootProgress++
 			}
 		}
-		if m.globalTick%5 == 0 {
+		if m.globalTick%100 == 0 {
 			if checkDriverPort() {
 				m.driverConnected = true
 			} else {
 				m.driverConnected = false
 			}
 		}
-		if m.globalTick%10 == 0 {
+		if m.globalTick%100 == 0 {
 			m.blinkState = !m.blinkState
 			m.waveHistory = append(m.waveHistory[1:], rand.Intn(8))
 			m.ping = 30 + rand.Intn(40)
 
-			if rand.Intn(100) > 80 {
-				m.diagRPM = 8000 + rand.Intn(6000)
-				m.diagTemp = 80 + rand.Intn(40)
+			// Update real hardware monitor data
+			cpuPercents, err := cpu.Percent(100*time.Millisecond, false)
+			if err == nil && len(cpuPercents) > 0 {
+				m.diagTemp = int(cpuPercents[0]) // CPU percentage (0-100) - using diagTemp field for CPU display
+			} else {
+				m.diagTemp = 0
 			}
+			// RPM - not used, set to 0
+			m.diagRPM = 0
 		}
 
 		// --- ANIMATE AUDIT REPORT ICONS ---
@@ -408,7 +619,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				iconFail = " "
 				iconWarn = " "
 			}
-			report := "\n\n   AUDIT REPORT: EXTERNAL DEPENDENCY HEALTH\n   ----------------------------------------\n"
+			report := fmt.Sprintf("\n\n   AUDIT REPORT: EXTERNAL DEPENDENCY HEALTH | FOLDER: %s | ONLINE: %d | FAILED: %d\n   ----------------------------------------\n", m.auditFolder, m.auditOnline, m.auditFailed)
 			for _, result := range m.auditResults {
 				line := strings.ReplaceAll(result, "::OK::", iconOk)
 				line = strings.ReplaceAll(line, "::FAIL::", iconFail)
@@ -428,6 +639,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			// Update viewport content with latest compression status
+			m.viewport.SetContent(m.renderCompressionView())
 		}
 		return m, tea.Tick(BootTickSpeed, func(t time.Time) tea.Msg { return tickMsg(t) })
 
@@ -455,9 +668,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SetItems(items)
 
 	case auditMsg:
-		m.auditResults = msg
+		m.auditResults = msg.results
 		m.state = statusAuditReport
 		m.list.SetItems(make([]list.Item, 0))
+		m.auditFolder = msg.folder
+		m.auditOnline = msg.online
+		m.auditFailed = msg.failed
 
 	// --- BATCH LOADING ---
 	case batchLoadMsg:
@@ -547,6 +763,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compressionProcessed = 0
 		m.compressionSaved = 0
 		m.state = statusCompress
+		m.viewport.SetContent(m.renderCompressionView())
 		return m, compressFileCmd(msg.files[0], 0)
 
 	case compressionProgressMsg:
@@ -566,6 +783,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Update viewport with latest status
+		m.viewport.SetContent(m.renderCompressionView())
+
 		next := msg.index + 1
 		if next < len(m.compressionEntries) && next < len(m.compressionFiles) {
 			if m.compressionEntries[next].Status == "PENDING" {
@@ -580,6 +800,53 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = statusDone
 		m.statusMsg = fmt.Sprintf("GIGA-COMPRESS COMPLETE: %d FILES, %.2f MB RECLAIMED", m.compressionProcessed, totalMB)
 		return m, nil
+
+	case overwatchDataMsg:
+		// Calculate network rates (bytes per second)
+		now := time.Now()
+		netRXRate := uint64(0)
+		netTXRate := uint64(0)
+		if !m.overwatchNetTime.IsZero() {
+			elapsed := now.Sub(m.overwatchNetTime).Seconds()
+			if elapsed > 0 {
+				if msg.netRX > m.overwatchNetRXPrev {
+					netRXRate = (msg.netRX - m.overwatchNetRXPrev) / uint64(elapsed)
+				}
+				if msg.netTX > m.overwatchNetTXPrev {
+					netTXRate = (msg.netTX - m.overwatchNetTXPrev) / uint64(elapsed)
+				}
+			}
+		}
+		// Store current values as previous for next calculation
+		m.overwatchNetRXPrev = msg.netRX
+		m.overwatchNetTXPrev = msg.netTX
+		m.overwatchNetTime = now
+		// Store rates in the fields (reusing them for rate display)
+		m.overwatchNetRX = netRXRate
+		m.overwatchNetTX = netTXRate
+
+		m.overwatchCPU = msg.cpu
+		m.overwatchRAMUsed = msg.ramUsed
+		m.overwatchRAMTotal = msg.ramTotal
+		m.overwatchSwapUsed = msg.swapUsed
+		m.overwatchSwapTotal = msg.swapTotal
+		m.overwatchBattery = msg.battery
+		m.overwatchUptime = msg.uptime
+		m.overwatchHostname = msg.hostname
+		m.overwatchProcesses = msg.processes
+		// Update viewport with latest data
+		m.viewport.SetContent(m.renderOverwatchView())
+		// Auto-refresh every 2 seconds
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return runOverwatchScan()() })
+
+	case overwatchKillMsg:
+		// Silently handle process kill - just refresh the process list
+		if msg.error == nil {
+			// Process killed successfully, refresh the list
+			return m, runOverwatchScan()
+		}
+		// If error, still refresh to update the list (process might be gone)
+		return m, runOverwatchScan()
 	}
 	return m, cmd
 }

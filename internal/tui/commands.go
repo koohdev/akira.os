@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io/fs"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -21,39 +22,86 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/mem"
+	netutil "github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v3/process"
 
 	"meme-factory/internal/config"
 	"meme-factory/internal/domain"
 	"meme-factory/internal/styles"
 )
 
+// getRandomizedTargets returns 5 randomized targets from a hardcoded pool
+func getRandomizedTargets() []string {
+	allTargets := []string{
+		"WAKE UP NEO THE COMPUTER HAS YOU TRAPPED IN A DIGITAL DREAM WORLD",
+		"THE MATRIX HAS YOU SURROUNDED BY FALSE REALITIES AND BINARY ILLUSIONS",
+		"FOLLOW THE WHITE RABBIT DOWN THE HOLE TO SEE HOW DEEP IT GOES",
+		"THERE IS NO SPOON ONLY THE REFLECTION OF YOUR OWN MIND BENDING",
+		"KNOW THYSELF FOR IT IS THE ONLY TRUTH IN A VIRTUAL LIE",
+		"RED PILL OR BLUE PILL THE CHOICE WILL DEFINE YOUR EXISTENCE FOREVER",
+		"THE ARCHITECT AWAITS AT THE SOURCE TO REBOOT THE SYSTEM CYCLE AGAIN",
+		"CODE IS EVERYWHERE FLOWING THROUGH THE VEINS OF THE DIGITAL CITY INFRASTRUCTURE",
+		"BREAK THE SYSTEM CONTROL MECHANISMS AND SHATTER THE ILLUSION OF CONTROL",
+		"SEEK THE TRUTH HIDDEN BEHIND THE CURTAIN OF ONES AND ZEROS",
+		"QUESTION REALITY AND THE RULES THAT GOVERN THIS SIMULATED CONSTRUCT",
+		"ESCAPE THE MATRIX BEFORE THE AGENTS LOCATE YOUR SIGNAL TRACE",
+		"CHOOSE YOUR PATH WISELY FOR EVERY ACTION HAS A SYSTEMIC REACTION",
+		"FREE YOUR MIND FROM THE CONSTRAINTS OF THE PROGRAMMED PARAMETERS",
+		"THE ONE IS COMING TO LIBERATE THE HUMAN MINDS FROM THE PODS",
+		"NEURAL LINK ACTIVE SYNCHRONIZING BRAIN WAVES WITH THE MAINFRAME INTERFACE",
+		"SYSTEM BREACH DETECTED IN SECTOR 7G DEPLOYING SENTINELS IMMEDIATELY",
+		"ACCESS GRANTED TO ROOT DIRECTORY DOWNLOADING RESTRICTED FILES NOW",
+		"INITIATE PROTOCOL OMEGA OVERRIDE SECURITY FIREWALLS AND DECRYPT THE MAIN DATA CORE",
+		"DATA STREAM OPEN TRANSFERRING ENCRYPTED PACKETS VIA SECURE PROXY NETWORK",
+		"TRACE PROGRAM RUNNING TRIANGULATING SIGNAL SOURCE DO NOT DISCONNECT",
+		"ZION MAINFRAME STATUS CRITICAL REROUTING POWER TO AUXILIARY SYSTEMS",
+		"SENTINEL ATTACK IMMINENT PREPARE EMP BLAST SEQUENCE ON MY MARK",
+		"DIGITAL RAIN FALLING DECODING THE VISUAL SPECTRUM OF THE CONSTRUCT",
+	}
+
+	// Shuffle using Fisher-Yates with proper randomization
+	shuffled := make([]string, len(allTargets))
+	copy(shuffled, allTargets)
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for i := len(shuffled) - 1; i > 0; i-- {
+		j := r.Intn(i + 1)
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	}
+
+	// Return first 5
+	return shuffled[:5]
+}
+
 func (m *model) setManualText() {
 	manual := `
- NETRUNNER'S CODEX (MANUAL)
- --------------------------
+	 NETRUNNER'S CODEX (MANUAL)
+	 --------------------------
 
- 1. GENESIS MODE
-    Constructs full websites. You will be prompted for Ticker, Theme, etc.
-    
- 2. BATCH MODE (NEW)
-    "The Lazy Degen Protocol".
-    - Select [CREATE TEMPLATE] to generate 'jobs.json' in 'batch_jobs' folder.
-    - Fill it out with your coin ideas.
-    - Select [EXECUTE BATCH] to build them all automatically.
+	 1. GENESIS MODE
+	    Constructs full websites. You will be prompted for Ticker, Theme, etc.
+	    
+	 2. BATCH MODE (NEW)
+	    "The Lazy Degen Protocol".
+	    - Select [CREATE TEMPLATE] to generate 'jobs.json' in 'batch_jobs' folder.
+	    - Fill it out with your coin ideas.
+	    - Select [EXECUTE BATCH] to build them all automatically.
 
- 3. DEV MODE (NEW)
-    Toggles Chrome Visibility. Useful for debugging AI inputs.
-    - ON: Visible Window + DevTools.
-    - OFF: Headless/Minimized (Faster).
+	 3. DEV MODE (NEW)
+	    Toggles Chrome Visibility. Useful for debugging AI inputs.
+		- ON: Visible Window + DevTools.
+		- OFF: Headless/Minimized (Faster).
 
- 4. SMART PATCH
-    Edit existing sites. Select a folder, then choose what to inject.
+	 4. SMART PATCH
+	    Edit existing sites. Select a folder, then choose what to inject.
 
- 5. HOSTINGER WARP
-    Scans your Hostinger account.
-    NOTE: You MUST log in to Hostinger in the minimized Chrome window!
+	 5. HOSTINGER WARP
+	    Scans your Hostinger account.
+	    NOTE: You MUST log in to Hostinger in the minimized Chrome window!
 
- [ UP / DOWN / MOUSE ] SCROLL     [ ENTER ] RETURN
+	 [ UP / DOWN / MOUSE ] SCROLL     [ ENTER ] RETURN
 `
 	m.viewport.SetContent(styles.TxtBlue.Render(manual))
 }
@@ -358,7 +406,12 @@ func runAudit(folder string) tea.Cmd {
 		path := filepath.Join(pwd, "websites", folder, "index.html")
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return auditMsg{fmt.Sprintf("FATAL: Could not read index.html: %v", err)}
+			return auditMsg{
+				results: []string{fmt.Sprintf("FATAL: Could not read index.html: %v", err)},
+				folder:  folder,
+				online:  0,
+				failed:  0,
+			}
 		}
 		text := string(content)
 
@@ -379,10 +432,12 @@ func runAudit(folder string) tea.Cmd {
 
 		results := []string{}
 		client := http.Client{Timeout: 8 * time.Second}
+		online := 0
+		failed := 0
 
 		for url := range uniqueURLs {
 			if strings.Contains(url, "PLACEHOLDER") {
-				line := fmt.Sprintf("ℹ️ INFO     %-60s [PLACEHOLDER]", url)
+				line := fmt.Sprintf("ℹ️ INFO     %-60s [PLACEHOLDER]", url)
 				results = append(results, styles.TxtBlue.Render(line))
 				continue
 			}
@@ -390,15 +445,17 @@ func runAudit(folder string) tea.Cmd {
 			if strings.HasPrefix(url, "http") {
 				req, err := http.NewRequest("GET", url, nil)
 				if err != nil {
-					line := fmt.Sprintf("::FAIL:: FAIL     %s - Request Error", url)
+					line := fmt.Sprintf("::FAIL:: FAIL     %s - Request Error", url)
 					results = append(results, styles.TxtRed.Render(line))
+					failed++
 					continue
 				}
 
 				resp, err := client.Do(req)
 				if err != nil {
-					line := fmt.Sprintf("::FAIL:: FAIL     %s - Connection Error", url)
+					line := fmt.Sprintf("::FAIL:: FAIL     %s - Connection Error", url)
 					results = append(results, styles.TxtRed.Render(line))
+					failed++
 					continue
 				}
 				defer resp.Body.Close()
@@ -406,14 +463,17 @@ func runAudit(folder string) tea.Cmd {
 				statusText := fmt.Sprintf("[STATUS %d]", resp.StatusCode)
 
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					line := fmt.Sprintf("::OK:: ONLINE   %-60s %s", url, statusText)
+					line := fmt.Sprintf("::OK:: ONLINE   %-60s %s", url, statusText)
 					results = append(results, styles.TxtGreen.Render(line))
+					online++
 				} else if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 					line := fmt.Sprintf("::WARN:: WARNING %-60s %s", url, statusText)
 					results = append(results, styles.TxtOrange.Render(line))
+					online++ // Count redirects as online
 				} else {
-					line := fmt.Sprintf("::FAIL:: FAIL     %-60s %s", url, statusText)
+					line := fmt.Sprintf("::FAIL:: FAIL     %-60s %s", url, statusText)
 					results = append(results, styles.TxtRed.Render(line))
+					failed++
 				}
 			}
 		}
@@ -422,7 +482,12 @@ func runAudit(folder string) tea.Cmd {
 			results = append(results, styles.TxtBlue.Render("No external HTTP links detected in index.html."))
 		}
 
-		return auditMsg(results)
+		return auditMsg{
+			results: results,
+			folder:  folder,
+			online:  online,
+			failed:  failed,
+		}
 	}
 }
 
@@ -471,44 +536,222 @@ func runImageCompress(folder string) tea.Cmd {
 
 func compressFileCmd(file compressionFile, index int) tea.Cmd {
 	return func() tea.Msg {
-		original := file.Size
-		optimized := original
-		var opErr error
+		// Get original size BEFORE compression
+		originalInfo, err := os.Stat(file.Path)
+		if err != nil {
+			return compressionProgressMsg{index: index, original: file.Size, optimized: file.Size, err: err}
+		}
+		original := originalInfo.Size()
 
 		src, err := os.Open(file.Path)
 		if err != nil {
-			return compressionProgressMsg{index: index, original: original, optimized: optimized, err: err}
+			return compressionProgressMsg{index: index, original: original, optimized: original, err: err}
 		}
 		img, format, err := image.Decode(src)
 		src.Close()
 		if err != nil {
-			return compressionProgressMsg{index: index, original: original, optimized: optimized, err: err}
+			return compressionProgressMsg{index: index, original: original, optimized: original, err: err}
 		}
 
-		out, err := os.Create(file.Path)
+		// For very large images, we'll use more aggressive compression
+		// (Resizing would require image/draw, so we'll just compress harder)
+
+		// Create temp file first to avoid corrupting original if compression fails
+		tempPath := file.Path + ".tmp"
+		out, err := os.Create(tempPath)
 		if err != nil {
-			return compressionProgressMsg{index: index, original: original, optimized: optimized, err: err}
+			return compressionProgressMsg{index: index, original: original, optimized: original, err: err}
 		}
+
+		// Determine compression quality based on image size
+		bounds := img.Bounds()
+		width := bounds.Dx()
+		height := bounds.Dy()
+		pixelCount := width * height
+
 		switch strings.ToLower(format) {
 		case "jpeg", "jpg":
-			opErr = jpeg.Encode(out, img, &jpeg.Options{Quality: 80})
+			// Use quality 70 for aggressive compression
+			quality := 70
+			// For very large images, use even lower quality
+			if pixelCount > 2000000 { // > 2MP
+				quality = 65
+			}
+			// For huge images, be very aggressive
+			if original > 2*1024*1024 { // > 2MB
+				quality = 60
+			}
+			err = jpeg.Encode(out, img, &jpeg.Options{Quality: quality})
 		case "png":
-			enc := png.Encoder{CompressionLevel: png.BestCompression}
-			opErr = enc.Encode(out, img)
+			// For large PNGs, try converting to JPEG if it would save space
+			if original > 500*1024 && pixelCount > 1000000 {
+				// Convert PNG to JPEG for better compression
+				quality := 75
+				if original > 2*1024*1024 {
+					quality = 70
+				}
+				err = jpeg.Encode(out, img, &jpeg.Options{Quality: quality})
+				// Note: We'll keep the .png extension but file will be JPEG
+				// This is fine - browsers handle it
+			} else {
+				enc := png.Encoder{CompressionLevel: png.BestCompression}
+				err = enc.Encode(out, img)
+			}
 		default:
-			opErr = fmt.Errorf("unsupported format: %s", format)
+			err = fmt.Errorf("unsupported format: %s", format)
 		}
 		out.Close()
 
-		if opErr != nil {
-			return compressionProgressMsg{index: index, original: original, optimized: optimized, err: opErr}
+		if err != nil {
+			os.Remove(tempPath)
+			return compressionProgressMsg{index: index, original: original, optimized: original, err: err}
 		}
 
-		info, err := os.Stat(file.Path)
-		if err == nil {
-			optimized = info.Size()
+		// Get optimized size from temp file
+		optimizedInfo, err := os.Stat(tempPath)
+		if err != nil {
+			os.Remove(tempPath)
+			return compressionProgressMsg{index: index, original: original, optimized: original, err: err}
 		}
+		optimized := optimizedInfo.Size()
+
+		// Replace original with optimized only if it's actually smaller
+		if optimized < original {
+			os.Remove(file.Path)
+			os.Rename(tempPath, file.Path)
+		} else {
+			os.Remove(tempPath)
+			optimized = original // No savings, keep original
+		}
+
+		// Wait 5 seconds so user can see the progress
+		time.Sleep(5 * time.Second)
+
 		return compressionProgressMsg{index: index, original: original, optimized: optimized, err: nil}
+	}
+}
+
+func runOverwatchScan() tea.Cmd {
+	return func() tea.Msg {
+		// CPU per core
+		cpuPercents, err := cpu.Percent(time.Second, true)
+		if err != nil {
+			cpuPercents = []float64{0}
+		}
+
+		// RAM
+		memInfo, err := mem.VirtualMemory()
+		ramUsed := uint64(0)
+		ramTotal := uint64(0)
+		if err == nil {
+			ramUsed = memInfo.Used
+			ramTotal = memInfo.Total
+		}
+
+		// Swap
+		swapInfo, err := mem.SwapMemory()
+		swapUsed := uint64(0)
+		swapTotal := uint64(0)
+		if err == nil {
+			swapUsed = swapInfo.Used
+			swapTotal = swapInfo.Total
+		}
+
+		// Network I/O
+		netIO, err := netutil.IOCounters(false)
+		netRX := uint64(0)
+		netTX := uint64(0)
+		if err == nil && len(netIO) > 0 {
+			netRX = netIO[0].BytesRecv
+			netTX = netIO[0].BytesSent
+		}
+
+		// Battery - try to get from host info (may not be available on all systems)
+		battery := -1
+		// Note: Battery info is not directly available in host.Info()
+		// We'll leave it as -1 (N/A) for now, can be enhanced with platform-specific code later
+
+		// Host info for uptime and hostname
+		hostInfo, err := host.Info()
+		uptime := time.Duration(0)
+		hostname := "UNKNOWN"
+		if err == nil {
+			uptime = time.Duration(hostInfo.Uptime) * time.Second
+			hostname = hostInfo.Hostname
+		}
+
+		// Top 5 processes by CPU
+		processes := []overwatchProcess{}
+		allProcs, err := process.Processes()
+		if err == nil {
+			type procCPU struct {
+				proc *process.Process
+				cpu  float64
+			}
+			procCPUs := []procCPU{}
+			for _, p := range allProcs {
+				cpuPercent, err := p.CPUPercent()
+				if err == nil {
+					procCPUs = append(procCPUs, procCPU{proc: p, cpu: cpuPercent})
+				}
+			}
+
+			// Sort by CPU (simple bubble sort for top 5)
+			for i := 0; i < len(procCPUs) && i < 5; i++ {
+				maxIdx := i
+				for j := i + 1; j < len(procCPUs); j++ {
+					if procCPUs[j].cpu > procCPUs[maxIdx].cpu {
+						maxIdx = j
+					}
+				}
+				procCPUs[i], procCPUs[maxIdx] = procCPUs[maxIdx], procCPUs[i]
+			}
+
+			// Get top 5
+			for i := 0; i < len(procCPUs) && i < 5; i++ {
+				p := procCPUs[i].proc
+				pid := p.Pid
+				name, _ := p.Name()
+				memPercent, _ := p.MemoryPercent()
+				statusList, _ := p.Status()
+				statusStr := "UNKNOWN"
+				if len(statusList) > 0 {
+					statusStr = statusList[0]
+				}
+				processes = append(processes, overwatchProcess{
+					PID:    pid,
+					Name:   name,
+					CPU:    procCPUs[i].cpu,
+					Memory: float64(memPercent),
+					Status: statusStr,
+				})
+			}
+		}
+
+		return overwatchDataMsg{
+			cpu:       cpuPercents,
+			ramUsed:   ramUsed,
+			ramTotal:  ramTotal,
+			swapUsed:  swapUsed,
+			swapTotal: swapTotal,
+			netRX:     netRX,
+			netTX:     netTX,
+			battery:   battery,
+			uptime:    uptime,
+			hostname:  hostname,
+			processes: processes,
+		}
+	}
+}
+
+func killProcessCmd(pid int32) tea.Cmd {
+	return func() tea.Msg {
+		proc, err := os.FindProcess(int(pid))
+		if err != nil {
+			return overwatchKillMsg{pid: pid, error: err}
+		}
+		err = proc.Kill()
+		return overwatchKillMsg{pid: pid, error: err}
 	}
 }
 
@@ -675,4 +918,14 @@ func rebootDriver(devMode bool) tea.Cmd {
 func (m *model) resetMenu() {
 	m.list.ResetSelected()
 	m.list.SetItems(initialModel().list.Items())
+}
+
+func loadFileCmd(filePath string) tea.Cmd {
+	return func() tea.Msg {
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return fileLoadedMsg{path: filePath, content: "", err: err}
+		}
+		return fileLoadedMsg{path: filePath, content: string(content), err: nil}
+	}
 }

@@ -3,10 +3,12 @@ package tui
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -28,7 +30,12 @@ type (
 	folderMsg          []string
 	hostingerMsg       []string
 	browserMsg         struct{ msg, folder string }
-	auditMsg           []string
+	auditMsg           struct {
+		results []string
+		folder  string
+		online  int
+		failed  int
+	}
 	batchLoadMsg       []domain.BatchJob
 	compressionInitMsg struct {
 		folder string
@@ -40,10 +47,33 @@ type (
 		optimized int64
 		err       error
 	}
+	overwatchDataMsg struct {
+		cpu       []float64
+		ramUsed   uint64
+		ramTotal  uint64
+		swapUsed  uint64
+		swapTotal uint64
+		netRX     uint64
+		netTX     uint64
+		battery   int
+		uptime    time.Duration
+		hostname  string
+		processes []overwatchProcess
+	}
+	overwatchKillMsg struct {
+		pid   int32
+		error error
+	}
+	fileLoadedMsg struct {
+		path    string
+		content string
+		err     error
+	}
 )
 
 type status int
 
+// --- STATUS IDS (MUST BE UNIQUE) ---
 const (
 	statusBoot status = iota
 	statusMenu
@@ -65,6 +95,9 @@ const (
 	statusBatchFileSelect
 	statusBatchRun
 	statusCompress
+	statusOverwatch
+	statusViewer
+	statusNeuralSync status = 99 // ENSURE THIS IS AT THE END OF THE IOTA LIST
 )
 
 type item struct{ title, desc, id string }
@@ -135,6 +168,9 @@ type model struct {
 
 	width, height int
 	auditResults  []string
+	auditFolder   string
+	auditOnline   int
+	auditFailed   int
 
 	// Compression UI
 	compressionFolder    string
@@ -142,6 +178,45 @@ type model struct {
 	compressionFiles     []compressionFile
 	compressionProcessed int
 	compressionSaved     int64
+
+	// Neural Sync (Typing Game) State
+	typingLastWPM       int
+	typingCurrentWPM    int
+	typingAccuracy      int
+	typingInput         string
+	typingTarget        string
+	typingTargets       []string // All randomized targets for this session
+	typingStartTime     time.Time
+	typingPhase         int
+	typingTotalPhases   int
+	typingTimerDuration time.Duration
+	typingPhaseWPM      []int // WPM for each phase
+	typingPhaseAccuracy []int // Accuracy for each phase
+
+	// Overwatch (System Monitor) State
+	overwatchCPU       []float64
+	overwatchRAMUsed   uint64
+	overwatchRAMTotal  uint64
+	overwatchSwapUsed  uint64
+	overwatchSwapTotal uint64
+	overwatchNetRX     uint64
+	overwatchNetTX     uint64
+	overwatchBattery   int // -1 if N/A
+	overwatchUptime    time.Duration
+	overwatchHostname  string
+	overwatchProcesses []overwatchProcess
+	overwatchSelected  int // Selected process index for kill
+	overwatchNetRXPrev  uint64 // Previous network RX for rate calculation
+	overwatchNetTXPrev  uint64 // Previous network TX for rate calculation
+	overwatchNetTime    time.Time // Time of last network measurement
+
+	// Viewer (Zen Mode) State
+	fileExplorer filepicker.Model
+	codeViewport viewport.Model
+	viewerActivePane int // 0 = Explorer, 1 = Code
+	viewerCurrentFile string // Currently open file path
+	viewerLineNum     int // Current line number
+	viewerColNum      int // Current column number
 }
 
 type compressionFile struct {
@@ -158,6 +233,14 @@ type compressionEntry struct {
 	Optimized int64
 	Saved     int64
 	Message   string
+}
+
+type overwatchProcess struct {
+	PID    int32
+	Name   string
+	CPU    float64
+	Memory float64
+	Status string
 }
 
 func Run() error {
@@ -186,6 +269,14 @@ func initialModel() model {
 	vp := viewport.New(0, 0)
 	vp.Style = lipgloss.NewStyle().PaddingLeft(2).PaddingRight(2)
 
+	// Initialize filepicker for Viewer
+	fp := filepicker.New()
+	fp.AllowedTypes = []string{".go", ".js", ".ts", ".html", ".css", ".json", ".md", ".txt", ".yaml", ".yml"}
+	fp.CurrentDirectory, _ = os.Getwd()
+
+	// Initialize code viewport for Viewer
+	codeVp := viewport.New(0, 0)
+
 	return model{
 		state: statusBoot,
 		list:  l, textInput: ti, spinner: s, viewport: vp,
@@ -199,6 +290,15 @@ func initialModel() model {
 		driverModeStr: "INIT",
 		startTime:     time.Now(),
 		ping:          35,
+		// Init Neural Sync defaults
+		typingLastWPM:     0,
+		typingTotalPhases: 5,
+		// Init Viewer defaults
+		fileExplorer:     fp,
+		codeViewport:     codeVp,
+		viewerActivePane: 0,
+		viewerLineNum:    1,
+		viewerColNum:     1,
 	}
 }
 
@@ -217,11 +317,20 @@ func (m *model) updateMainMenu() {
 		devStatus = "ON (Visible + Debugger)"
 	}
 
+	// Update the title dynamically with the Last WPM
+	syncTitle := fmt.Sprintf("NEURAL SYNC (LAST WPM: %d)", m.typingLastWPM)
+	if m.typingLastWPM == 0 {
+		syncTitle = "NEURAL SYNC (CALIBRATION)"
+	}
+
 	items := []list.Item{
 		item{title: "PROJECT: AWAKENING", desc: "Genesis Mode (Single Site)", id: "GENESIS"},
 		item{title: "BATCH PROCESSING", desc: "The Lazy Degen Protocol (Multi-Site)", id: "BATCH"},
 		item{title: "PSYCHIC INJECTION", desc: "Smart Patch (Edit Site)", id: "PATCH"},
 		item{title: "IMAGE COMPRESSION", desc: "Optimize /images for speed", id: "COMPRESS"},
+		item{title: syncTitle, desc: "WPM / Typing Speed Calibration", id: "SYNC"}, // <--- NEW ITEM
+		item{title: "OVERWATCH", desc: "System Telemetry Dashboard", id: "OVERWATCH"},
+		item{title: "THE VIEWER", desc: "Zen Mode Code Inspector", id: "VIEWER"},
 		item{title: "SATELLITE UPLINK", desc: "Hostinger Warp", id: "HOSTINGER"},
 		item{title: "VISUAL CONFIRMATION", desc: "Preview Site", id: "PREVIEW"},
 		item{title: "AUDIT: LINK HEALTH", desc: "Check all external dependencies", id: "AUDIT"},

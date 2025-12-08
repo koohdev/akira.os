@@ -4,8 +4,8 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-# The command to build your app (adds .exe for Windows)
-cmd = "go build -o ./tmp/main.exe ."
+# FIX: Changed "." to "./app" so it finds your main.go
+cmd = "go build -o ./tmp/main.exe ./app"
 # The binary to run after building
 bin = "./tmp/main.exe"
 # Files to watch (when these change, app restarts)
